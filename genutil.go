@@ -19,13 +19,72 @@ const (
 	envGOLINE    = "GOLINE"
 )
 
-func LoadPackageAndFindClosestType() (*packages.Package, *ast.File, *types.TypeName, error) {
-	pkg, err := LoadPackage()
+type Opts struct {
+	file string
+	pkg  string
+	line int
+}
+
+type OptsFunc func(opts *Opts)
+
+func FileName(name string) OptsFunc {
+	return func(opts *Opts) {
+		opts.file = name
+	}
+}
+
+func PackageName(name string) OptsFunc {
+	return func(opts *Opts) {
+		opts.pkg = name
+	}
+}
+
+func Line(line int) OptsFunc {
+	return func(opts *Opts) {
+		opts.line = line
+	}
+}
+
+func applyOpts(fs []OptsFunc) (*Opts, error) {
+	var ret Opts
+	for _, f := range fs {
+		f(&ret)
+	}
+
+	var ok bool
+	if ret.file == "" {
+		ret.file, ok = resolveEnvValue(envGOFILE)
+		if !ok {
+			return nil, errors.New("failed to determine input file")
+		}
+	}
+
+	if ret.pkg == "" {
+		ret.pkg, ok = resolveEnvValue(envGOPACKAGE)
+		if !ok {
+			return nil, errors.New("failed to determine package name")
+		}
+	}
+
+	if ret.line == 0 {
+		if lineStr, _ := resolveEnvValue(envGOLINE); lineStr != "" {
+			_, err := fmt.Sscan(lineStr, &ret.line)
+			if err != nil {
+				return nil, fmt.Errorf("failed to determine source line: %w", err)
+			}
+		}
+	}
+
+	return &ret, nil
+}
+
+func LoadPackageAndFindClosestType(opts ...OptsFunc) (*packages.Package, *ast.File, *types.TypeName, error) {
+	pkg, err := LoadPackage(opts...)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	f, tn, err := FindClosestType(pkg)
+	f, tn, err := FindClosestType(pkg, opts...)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -33,18 +92,13 @@ func LoadPackageAndFindClosestType() (*packages.Package, *ast.File, *types.TypeN
 	return pkg, f, tn, nil
 }
 
-func LoadPackage() (*packages.Package, error) {
-	inputFileName, ok := resolveEnvValue(envGOFILE)
-	if !ok {
-		return nil, errors.New("failed to determine input file")
+func LoadPackage(opts ...OptsFunc) (*packages.Package, error) {
+	op, err := applyOpts(opts)
+	if err != nil {
+		return nil, err
 	}
 
-	pkgName, ok := resolveEnvValue(envGOPACKAGE)
-	if !ok {
-		return nil, errors.New("failed to determine package name")
-	}
-
-	pkg, err := loadPackage(pkgName, inputFileName)
+	pkg, err := loadPackage(op.pkg, op.file)
 	if err != nil {
 		return nil, err
 	}
@@ -52,21 +106,13 @@ func LoadPackage() (*packages.Package, error) {
 	return pkg, nil
 }
 
-func FindClosestType(pkg *packages.Package) (*ast.File, *types.TypeName, error) {
-	inputFileName, ok := resolveEnvValue(envGOFILE)
-	if !ok {
-		return nil, nil, errors.New("failed to determine input file")
+func FindClosestType(pkg *packages.Package, opts ...OptsFunc) (*ast.File, *types.TypeName, error) {
+	op, err := applyOpts(opts)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	var line int
-	if lineStr, _ := resolveEnvValue(envGOLINE); lineStr != "" {
-		_, err := fmt.Sscan(lineStr, &line)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to determine source line: %w", err)
-		}
-	}
-
-	return findTypeDecl(pkg.Fset, pkg.Syntax, pkg.TypesInfo, inputFileName, line)
+	return findTypeDecl(pkg.Fset, pkg.Syntax, pkg.TypesInfo, op.file, op.line)
 }
 
 func resolveEnvValue(env string) (string, bool) {
